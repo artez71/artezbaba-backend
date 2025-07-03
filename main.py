@@ -19,7 +19,7 @@ app.add_middleware(
 class LinkRequest(BaseModel):
     url: str
 
-@app.post("/get_video")
+@app.post("/get_video_url")  # ===> Route tam eşleşsin!
 def get_video(link_request: LinkRequest):
     url = link_request.url
     ydl_opts = {'quiet': True, 'skip_download': True}
@@ -36,8 +36,12 @@ def get_video(link_request: LinkRequest):
                 else:
                     raise HTTPException(status_code=400, detail="Video URL not found")
 
-            video = requests.get(video_url, stream=True)
+            video = requests.get(video_url, stream=True, timeout=10)
             return StreamingResponse(video.iter_content(1024), media_type="video/mp4")
 
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
