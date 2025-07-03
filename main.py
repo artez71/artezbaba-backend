@@ -41,3 +41,9 @@ def get_video(link_request: LinkRequest):
 
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+
+# ✅ Railway için gerekli uvicorn bloğu:
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
