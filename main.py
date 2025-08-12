@@ -14,7 +14,6 @@ import unicodedata
 import logging
 
 # --- LOGGER AYARLARI ---
-# Hataları ve önemli bilgileri konsola yazdırmak için
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -25,7 +24,6 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="MRB Video Downloader API", version="1.4.1")
 
 # --- CORS AYARLARI ---
-# Geliştirme için her yerden erişime izin veriyoruz.
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")
 app.add_middleware(
     CORSMiddleware,
@@ -36,12 +34,10 @@ app.add_middleware(
 )
 
 # --- KONFİGÜRASYON ---
-# yt-dlp için mobil User-Agent
 USER_AGENT = (
     "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
 )
-# Cookie kullanımını isteğe bağlı hale getirdik
 USE_COOKIES = os.getenv("USE_COOKIES", "0") == "1"
 COOKIES_FILE = os.getenv("COOKIES_FILE", None)
 
@@ -82,7 +78,6 @@ def pick_best_mp4_format(info: dict) -> dict | None:
         and (f.get("protocol") or "").lower() not in bad_protocols
     ]
     if mp4s:
-        # En yüksek bit hızına (tbr) sahip olanı seç
         return sorted(mp4s, key=lambda f: (f.get("tbr") or 0), reverse=True)[0]
     return None
 
@@ -101,26 +96,18 @@ def _cleanup_dir(path: str):
 def _build_ytdlp_opts(skip_download: bool, url: str) -> dict:
     """yt-dlp için seçenekleri oluşturur."""
     opts = {
-        # quiet=True'yi kapattık, hata ayıklama için önemli
-        "quiet": False,
+        "quiet": True,  # Üretim ortamında logları kapatıyoruz
         "noplaylist": True,
         "http_headers": {"User-Agent": USER_AGENT},
         "skip_download": skip_download,
-        # Dosya adı için başlık bilgisini kullanır
         "outtmpl": os.path.join(tempfile.gettempdir(), "%(title).200B.%(ext)s"),
-        "progress_hooks": [lambda d: logger.info(d.get("status", ""))]
     }
     if USE_COOKIES and COOKIES_FILE:
-        if not os.path.exists(COOKIES_FILE):
-            logger.warning(f"Cookies dosyası bulunamadı: {COOKIES_FILE}")
-        else:
-            opts["cookies"] = COOKIES_FILE
+        opts["cookies"] = COOKIES_FILE
 
-    # Twitter için bestvideo+bestaudio formatını zorunlu kılar
     if "twitter.com" in url or "x.com" in url:
         opts["format"] = "bestvideo*+bestaudio/best"
         opts["postprocessors"] = [
-            # FFmpeg ile dönüştürme ve birleştirme yapması için
             {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"},
             {"key": "FFmpegMetadata"},
         ]
@@ -141,8 +128,6 @@ async def download_and_convert_with_ytdlp(url: str) -> tuple[str, str, str]:
     ydl_opts = _build_ytdlp_opts(skip_download=False, url=url)
     ydl_opts["outtmpl"] = outtmpl
     
-    # Tüm videoları h.264/aac mp4 formatına dönüştürmek için postprocessor ekliyoruz.
-    # Bu, en geniş uyumluluğu sağlar.
     ydl_opts["postprocessors"] = ydl_opts.get("postprocessors", []) + [
         {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"},
         {"key": "FFmpegMetadata"},
@@ -190,7 +175,6 @@ async def get_video(link_request: LinkRequest):
         )
 
     try:
-        # 1. Aşama: Bilgileri çek
         probe_opts = _build_ytdlp_opts(skip_download=True, url=url)
         with yt_dlp.YoutubeDL(probe_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -203,7 +187,6 @@ async def get_video(link_request: LinkRequest):
     title = info.get("title") or info.get("id") or "video"
     fmt = pick_best_mp4_format(info)
 
-    # 2. Aşama: Eğer progressive MP4 varsa, doğrudan proxy et
     if fmt and fmt.get("url"):
         logger.info("Progressive MP4 formatı bulundu, doğrudan akış başlatılıyor.")
         filename = sanitize_filename(title, ext=fmt.get("ext", "mp4"))
@@ -220,13 +203,11 @@ async def get_video(link_request: LinkRequest):
                     )
         except httpx.HTTPError as e:
             logger.error(f"Doğrudan akış hatası: {e}")
-            pass # Proxy başarısız olursa ikinci aşamaya geç
+            pass
 
-    # 3. Aşama: Progressive MP4 yoksa, indir, dönüştür ve dosyayı gönder
     logger.info("Doğrudan akış mümkün değil, video indirilecek ve dönüştürülecek.")
     final_path, final_name, tmpdir = await download_and_convert_with_ytdlp(url)
     
-    # Dosya indikten sonra geçici dizini silmek için arka plan görevi
     task = BackgroundTask(_cleanup_dir, tmpdir)
     return FileResponse(
         path=final_path,
@@ -238,15 +219,6 @@ async def get_video(link_request: LinkRequest):
 # --- UYGULAMA BAŞLANGICI ---
 if __name__ == "__main__":
     import uvicorn
-    # Uygulama başlamadan önce FFmpeg kontrolü
-    if not ffmpeg_available():
-        logger.error(
-            "HATA: FFmpeg sistemi üzerinde bulunamadı. "
-            "Lütfen FFmpeg'i kurun ve PATH değişkeninize ekleyin."
-        )
-        exit(1)
-        
     logger.info("MRB Video Downloader API başlatılıyor.")
     port = int(os.getenv("PORT", 8000))
-    # --reload parametresi geliştirme aşamasında önemlidir
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
