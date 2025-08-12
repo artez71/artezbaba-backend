@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, HttpUrl
 
 import yt_dlp
@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("mrb-downloader")
 
 # --- APP ---
-app = FastAPI(title="MRB Video Downloader API", version="1.6.1")
+app = FastAPI(title="MRB Video Downloader API", version="1.6.2")
 
 # --- CORS ---
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")
@@ -54,7 +54,7 @@ def is_supported(url: str) -> bool:
 def sanitize_filename(name: str, ext: str = "mp4") -> str:
     name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
     name = re.sub(r"[\\/:*?\"<>|]+", " ", name).strip()
-    name = re.sub(r"\s+", "_", name)  # Boşlukları alt çizgiye çevir
+    name = re.sub(r"\s+", "_", name)
     if not name:
         name = "video"
     return f"{name}.{ext}"
@@ -69,7 +69,6 @@ def pick_best_mp4_format(info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         and (f.get("protocol") or "").lower() not in {"m3u8", "m3u8_native", "http_dash_segments", "dash"}
     ]
     if mp4s:
-        # En iyi formatı seçerken birden fazla kritere göre sıralama
         return sorted(mp4s, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0), reverse=True)[0]
     return None
 
@@ -82,7 +81,7 @@ def _build_ytdlp_opts() -> dict:
         "retries": 3,
         "fragment_retries": 3,
         "concurrent_fragment_downloads": 5,
-        "format": "best",  # 'best' formatını kullanarak yt-dlp'nin en iyi formatı seçmesini sağlıyoruz
+        "format": "best",
         "format_sort": ["ext:mp4", "filesize:desc"],
     }
     
@@ -114,7 +113,6 @@ async def get_video(link_request: LinkRequest):
                 raise ValueError("Video bilgisi alınamadı.")
     except Exception as e:
         logger.error(f"Video çözümlenemedi: {e}")
-        # Hata durumunda 400 yerine 500 dönmek daha mantıklı olabilir
         raise HTTPException(status_code=500, detail=f"Video çözümlenirken bir hata oluştu: {str(e)}")
 
     title = info.get("title") or info.get("id") or "video"
@@ -149,9 +147,16 @@ async def get_video(link_request: LinkRequest):
         logger.error(f"Akış hatası: {e}")
         raise HTTPException(status_code=500, detail="Video akışı başlatılamadı.")
 
-# ---- ENTRYPOINT (lokal geliştirme) ----
+# ---- ENTRYPOINT (lokal geliştirme ve Railway) ----
 if __name__ == "__main__":
     import uvicorn
     logger.info("MRB Video Downloader API başlatılıyor.")
+    
+    # Railway'in atadığı portu al veya lokalde 8000 kullan
     port = int(os.getenv("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    
+    # reload=True sadece lokal geliştirme için faydalıdır.
+    # Dağıtım ortamında (Railway) reload=False olmalıdır.
+    is_prod = os.getenv("IS_PROD", "False").lower() == "true"
+    
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=not is_prod)
