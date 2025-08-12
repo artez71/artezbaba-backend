@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse, JSONResponse
+from pydantic import BaseModel, HttpUrl
 
 import yt_dlp
 import httpx
@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("mrb-downloader")
 
 # --- APP ---
-app = FastAPI(title="MRB Video Downloader API", version="1.6.0")
+app = FastAPI(title="MRB Video Downloader API", version="1.6.1")
 
 # --- CORS ---
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")
@@ -45,7 +45,7 @@ SUPPORTED_PATTERNS = [
 
 # ---- MODELS ----
 class LinkRequest(BaseModel):
-    url: str
+    url: HttpUrl
 
 # ---- HELPERS ----
 def is_supported(url: str) -> bool:
@@ -54,7 +54,7 @@ def is_supported(url: str) -> bool:
 def sanitize_filename(name: str, ext: str = "mp4") -> str:
     name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
     name = re.sub(r"[\\/:*?\"<>|]+", " ", name).strip()
-    name = re.sub(r"\s+", " ", name)
+    name = re.sub(r"\s+", "_", name)  # Boşlukları alt çizgiye çevir
     if not name:
         name = "video"
     return f"{name}.{ext}"
@@ -69,10 +69,11 @@ def pick_best_mp4_format(info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         and (f.get("protocol") or "").lower() not in {"m3u8", "m3u8_native", "http_dash_segments", "dash"}
     ]
     if mp4s:
-        return sorted(mp4s, key=lambda f: (f.get("tbr") or 0), reverse=True)[0]
+        # En iyi formatı seçerken birden fazla kritere göre sıralama
+        return sorted(mp4s, key=lambda f: (f.get("height") or 0, f.get("tbr") or 0), reverse=True)[0]
     return None
 
-def _build_ytdlp_opts(url: str) -> dict:
+def _build_ytdlp_opts() -> dict:
     opts = {
         "quiet": True,
         "noplaylist": True,
@@ -81,11 +82,8 @@ def _build_ytdlp_opts(url: str) -> dict:
         "retries": 3,
         "fragment_retries": 3,
         "concurrent_fragment_downloads": 5,
-        "format": (
-            "best[ext=mp4][protocol!=m3u8][protocol!=m3u8_native][protocol!=http_dash_segments]"
-            "/best"
-        ),
-        "format_sort": ["ext:mp4:m4a", "filesize"],
+        "format": "best",  # 'best' formatını kullanarak yt-dlp'nin en iyi formatı seçmesini sağlıyoruz
+        "format_sort": ["ext:mp4", "filesize:desc"],
     }
     
     use_cookies = os.getenv("USE_COOKIES", "0") == "1"
@@ -102,21 +100,22 @@ async def health():
 
 @app.post("/get_video")
 async def get_video(link_request: LinkRequest):
-    url = link_request.url.strip()
+    url = str(link_request.url).strip()
     logger.info(f"Gelen istek: {url}")
 
     if not is_supported(url):
         raise HTTPException(status_code=400, detail="Sadece Twitter/X ve TikTok linkleri destekleniyor.")
 
     try:
-        probe_opts = _build_ytdlp_opts(url=url)
+        probe_opts = _build_ytdlp_opts()
         with yt_dlp.YoutubeDL(probe_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             if not info:
                 raise ValueError("Video bilgisi alınamadı.")
     except Exception as e:
         logger.error(f"Video çözümlenemedi: {e}")
-        raise HTTPException(status_code=400, detail=f"Video çözümlenemedi: {str(e)}")
+        # Hata durumunda 400 yerine 500 dönmek daha mantıklı olabilir
+        raise HTTPException(status_code=500, detail=f"Video çözümlenirken bir hata oluştu: {str(e)}")
 
     title = info.get("title") or info.get("id") or "video"
     fmt = pick_best_mp4_format(info)
@@ -124,9 +123,9 @@ async def get_video(link_request: LinkRequest):
     if not fmt or not fmt.get("url"):
         raise HTTPException(status_code=404, detail="MP4 video formatı bulunamadı.")
 
-    logger.info("Progressive MP4 bulundu, doğrudan akış başlatılıyor.")
+    logger.info(f"Progressive MP4 bulundu: {fmt.get('url')}")
     filename = sanitize_filename(title, ext=fmt.get("ext", "mp4"))
-
+    
     try:
         async with httpx.AsyncClient(
             headers={"User-Agent": USER_AGENT},
@@ -137,17 +136,22 @@ async def get_video(link_request: LinkRequest):
                 r.raise_for_status()
                 ct = r.headers.get("Content-Type", "video/mp4")
                 disp = f'attachment; filename="{filename}"'
+                
                 return StreamingResponse(
-                    r.aiter_bytes(), media_type=ct, headers={"Content-Disposition": disp}
+                    r.aiter_bytes(),
+                    media_type=ct,
+                    headers={
+                        "Content-Disposition": disp,
+                        "Content-Length": r.headers.get("Content-Length")
+                    }
                 )
     except httpx.HTTPError as e:
         logger.error(f"Akış hatası: {e}")
         raise HTTPException(status_code=500, detail="Video akışı başlatılamadı.")
-
 
 # ---- ENTRYPOINT (lokal geliştirme) ----
 if __name__ == "__main__":
     import uvicorn
     logger.info("MRB Video Downloader API başlatılıyor.")
     port = int(os.getenv("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
