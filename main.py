@@ -147,16 +147,12 @@ async def get_video(link_request: LinkRequest):
         logger.error(f"Akış hatası: {e}")
         raise HTTPException(status_code=500, detail="Video akışı başlatılamadı.")
 
-# ---- ENTRYPOINT (lokal geliştirme ve Railway) ----
+# ---- ENTRYPOINT ----
 if __name__ == "__main__":
     import uvicorn
     logger.info("MRB Video Downloader API başlatılıyor.")
     
-    # Railway'in atadığı portu al veya lokalde 8000 kullan
     port = int(os.getenv("PORT", 8000))
-    
-    # reload=True sadece lokal geliştirme için faydalıdır.
-    # Dağıtım ortamında (Railway) reload=False olmalıdır.
     is_prod = os.getenv("IS_PROD", "False").lower() == "true"
     
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=not is_prod)
