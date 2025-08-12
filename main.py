@@ -13,7 +13,7 @@ import tempfile
 import shutil
 import unicodedata
 
-app = FastAPI(title="MRB Video Downloader API", version="1.4.0")
+app = FastAPI(title="MRB Video Downloader API", version="1.4.1")
 
 # --- CORS ---
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")
@@ -35,13 +35,22 @@ UA = (
     "(KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
 )
 
+# --- URL doğrulama ---
+SUPPORTED_PATTERNS = [
+    r"^(https?://)?(www\.)?(twitter\.com|x\.com)/.+",
+    r"^(https?://)?(www\.)?tiktok\.com/.+",
+    r"^(https?://)?(vm|vt)\.tiktok\.com/.+",
+]
+def is_supported(url: str) -> bool:
+    return any(re.match(p, url, flags=re.IGNORECASE) for p in SUPPORTED_PATTERNS)
+
 # --- Models ---
 class LinkRequest(BaseModel):
     url: str
 
 # --- Utils ---
 def sanitize_filename(name: str, ext: str = "mp4") -> str:
-    # Türkçe/özel karakterleri ASCII'ye indir ve temizle
+    # Türkçe/özel karakterleri ASCII'ye indir ve temizle (HTTP header latin-1 uyumu)
     name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
     name = re.sub(r"[\\/:*?\"<>|]+", " ", name).strip()
     name = re.sub(r"\s+", " ", name)
@@ -153,6 +162,11 @@ async def health():
 @app.post("/get_video")
 async def get_video(link_request: LinkRequest):
     url = link_request.url.strip()
+
+    # Yalnızca Twitter/X & TikTok kabul et
+    if not is_supported(url):
+        raise HTTPException(status_code=400, detail="Sadece Twitter/X ve TikTok linkleri destekleniyor.")
+
     try:
         probe_opts = _build_ytdlp_opts(skip_download=True, url=url)
         with yt_dlp.YoutubeDL(probe_opts) as ydl:
