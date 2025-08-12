@@ -11,10 +11,21 @@ import os
 import tempfile
 import shutil
 import unicodedata
+import logging
 
+# --- LOGGER AYARLARI ---
+# Hataları ve önemli bilgileri konsola yazdırmak için
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# --- FASTAPI UYGULAMASI ---
 app = FastAPI(title="MRB Video Downloader API", version="1.4.1")
 
-# --- CORS ---
+# --- CORS AYARLARI ---
+# Geliştirme için her yerden erişime izin veriyoruz.
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")
 app.add_middleware(
     CORSMiddleware,
@@ -24,43 +35,43 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Config ---
-USE_COOKIES = os.getenv("USE_COOKIES", "0") == "1"
-COOKIES_FILE = os.getenv("COOKIES_FILE")
-
-# Mobil User-Agent (Android Chrome)
-UA = (
+# --- KONFİGÜRASYON ---
+# yt-dlp için mobil User-Agent
+USER_AGENT = (
     "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
 )
+# Cookie kullanımını isteğe bağlı hale getirdik
+USE_COOKIES = os.getenv("USE_COOKIES", "0") == "1"
+COOKIES_FILE = os.getenv("COOKIES_FILE", None)
 
-# --- URL doğrulama ---
+# --- URL DOĞRULAMA ---
 SUPPORTED_PATTERNS = [
     r"^(https?://)?(www\.)?(twitter\.com|x\.com)/.+",
     r"^(https?://)?(www\.)?tiktok\.com/.+",
     r"^(https?://)?(vm|vt)\.tiktok\.com/.+",
 ]
+
 def is_supported(url: str) -> bool:
+    """Verilen URL'nin desteklenen bir platforma ait olup olmadığını kontrol eder."""
     return any(re.match(p, url, flags=re.IGNORECASE) for p in SUPPORTED_PATTERNS)
 
-# --- Models ---
+# --- MODEL TANIMLARI ---
 class LinkRequest(BaseModel):
     url: str
 
-# --- Utils ---
+# --- YARDIMCI FONKSİYONLAR ---
 def sanitize_filename(name: str, ext: str = "mp4") -> str:
-    # Türkçe/özel karakterleri ASCII'ye indir ve temizle (HTTP header latin-1 uyumu)
+    """Dosya adını ASCII uyumlu ve güvenli hale getirir."""
     name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
     name = re.sub(r"[\\/:*?\"<>|]+", " ", name).strip()
     name = re.sub(r"\s+", " ", name)
     if not name:
         name = "video"
-    if not name.lower().endswith(f".{ext}"):
-        name = f"{name}.{ext}"
-    return name
+    return f"{name}.{ext}"
 
 def pick_best_mp4_format(info: dict) -> dict | None:
-    """Sadece GERÇEK progressive MP4 (HLS/DASH değil) döndürür; yoksa None."""
+    """Progressive MP4 formatını bulur (HLS/DASH olmayan)."""
     bad_protocols = {"m3u8", "m3u8_native", "http_dash_segments", "dash"}
     formats = info.get("formats") or []
     mp4s = [
@@ -71,64 +82,68 @@ def pick_best_mp4_format(info: dict) -> dict | None:
         and (f.get("protocol") or "").lower() not in bad_protocols
     ]
     if mp4s:
+        # En yüksek bit hızına (tbr) sahip olanı seç
         return sorted(mp4s, key=lambda f: (f.get("tbr") or 0), reverse=True)[0]
     return None
 
 def ffmpeg_available() -> bool:
+    """FFmpeg'in sistemde yüklü olup olmadığını kontrol eder."""
     return shutil.which("ffmpeg") is not None
 
-async def stream_from_url(url: str, filename: str, content_type: str | None = None, extra_headers: dict | None = None):
-    base_headers = {"User-Agent": UA}
-    if extra_headers:
-        base_headers.update(extra_headers)
-
-    async with httpx.AsyncClient(headers=base_headers, timeout=None, follow_redirects=True) as client:
-        async with client.stream("GET", url) as r:
-            if r.status_code >= 400:
-                raise HTTPException(status_code=400, detail=f"Kaynak indirilemedi: {r.status_code}")
-            ct = content_type or r.headers.get("Content-Type", "video/mp4")
-            disp = f'attachment; filename="{filename}"'  # ASCII güvenli
-            return StreamingResponse(
-                r.aiter_bytes(),
-                media_type=ct,
-                headers={"Content-Disposition": disp},
-            )
-
 def _cleanup_dir(path: str):
-    shutil.rmtree(path, ignore_errors=True)
+    """Geçici dizini siler."""
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+        logger.info(f"Geçici dizin silindi: {path}")
+    except OSError as e:
+        logger.error(f"Geçici dizin silinirken hata oluştu: {e}")
 
-def _build_ytdlp_opts(skip_download: bool, outtmpl: str | None = None, url: str | None = None) -> dict:
+def _build_ytdlp_opts(skip_download: bool, url: str) -> dict:
+    """yt-dlp için seçenekleri oluşturur."""
     opts = {
-        "quiet": True,
+        # quiet=True'yi kapattık, hata ayıklama için önemli
+        "quiet": False,
         "noplaylist": True,
-        "http_headers": {"User-Agent": UA},
+        "http_headers": {"User-Agent": USER_AGENT},
         "skip_download": skip_download,
+        # Dosya adı için başlık bilgisini kullanır
+        "outtmpl": os.path.join(tempfile.gettempdir(), "%(title).200B.%(ext)s"),
+        "progress_hooks": [lambda d: logger.info(d.get("status", ""))]
     }
     if USE_COOKIES and COOKIES_FILE:
-        opts["cookies"] = COOKIES_FILE
-    if outtmpl:
-        opts["outtmpl"] = outtmpl
+        if not os.path.exists(COOKIES_FILE):
+            logger.warning(f"Cookies dosyası bulunamadı: {COOKIES_FILE}")
+        else:
+            opts["cookies"] = COOKIES_FILE
 
-    # X/Twitter için en iyi video+ses (HLS/DASH indirip birleştirme)
-    if url and (("twitter.com" in url) or ("x.com" in url)):
-        # bestvideo* = video codec uyumsuzluğunu esnetir, +bestaudio da ekler
+    # Twitter için bestvideo+bestaudio formatını zorunlu kılar
+    if "twitter.com" in url or "x.com" in url:
         opts["format"] = "bestvideo*+bestaudio/best"
-
+        opts["postprocessors"] = [
+            # FFmpeg ile dönüştürme ve birleştirme yapması için
+            {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"},
+            {"key": "FFmpegMetadata"},
+        ]
+    
     return opts
 
-async def download_to_mp4_with_ytdlp(url: str) -> tuple[str, str, str]:
-    """Gerçek MP4 yoksa: indir + H.264/AAC MP4'e dönüştür + dosya yolunu döndür."""
+async def download_and_convert_with_ytdlp(url: str) -> tuple[str, str, str]:
+    """Videoyu indirir, MP4'e dönüştürür ve dosya yolunu döndürür."""
     if not ffmpeg_available():
-        raise HTTPException(status_code=500, detail="FFmpeg bulunamadı.")
+        raise HTTPException(
+            status_code=500,
+            detail="FFmpeg sistemi üzerinde bulunamadı. Lütfen kurun ve PATH'e ekleyin."
+        )
+
     tmpdir = tempfile.mkdtemp(prefix="mrb_")
     outtmpl = os.path.join(tmpdir, "%(title).200B.%(ext)s")
-    ydl_opts = _build_ytdlp_opts(skip_download=False, outtmpl=outtmpl, url=url)
-
-    # Zorunlu en iyi kalite (video+audio)
-    ydl_opts.setdefault("format", "bestvideo*+bestaudio/best")
-
-    # QuickTime/çoğu oynatıcıyla uyumlu H.264 + AAC dönüştürme (+faststart)
-    ydl_opts["postprocessors"] = [
+    
+    ydl_opts = _build_ytdlp_opts(skip_download=False, url=url)
+    ydl_opts["outtmpl"] = outtmpl
+    
+    # Tüm videoları h.264/aac mp4 formatına dönüştürmek için postprocessor ekliyoruz.
+    # Bu, en geniş uyumluluğu sağlar.
+    ydl_opts["postprocessors"] = ydl_opts.get("postprocessors", []) + [
         {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"},
         {"key": "FFmpegMetadata"},
     ]
@@ -138,64 +153,100 @@ async def download_to_mp4_with_ytdlp(url: str) -> tuple[str, str, str]:
         "-movflags", "+faststart"
     ]
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        downloaded = ydl.prepare_filename(info)
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            logger.info(f"Video indiriliyor ve dönüştürülüyor: {url}")
+            info = ydl.extract_info(url, download=True)
+            downloaded_path = ydl.prepare_filename(info)
 
-    # Nihai MP4 yolunu bul
-    base = os.path.splitext(os.path.basename(downloaded))[0]
-    final_path = os.path.join(tmpdir, f"{base}.mp4")
-    if not os.path.exists(final_path):
-        mp4s = [os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.lower().endswith(".mp4")]
-        if not mp4s:
-            raise HTTPException(status_code=400, detail="MP4 oluşturulamadı.")
-        final_path = max(mp4s, key=os.path.getmtime)
+        final_path = os.path.join(tmpdir, os.path.splitext(os.path.basename(downloaded_path))[0] + ".mp4")
+        if not os.path.exists(final_path):
+            raise FileNotFoundError("Dönüştürülmüş MP4 dosyası bulunamadı.")
+            
+        final_name = sanitize_filename(info.get("title") or info.get("id") or "video", ext="mp4")
+        return final_path, final_name, tmpdir
 
-    final_name = sanitize_filename(info.get("title") or info.get("id") or "video", ext="mp4")
-    return final_path, final_name, tmpdir
+    except Exception as e:
+        _cleanup_dir(tmpdir)
+        logger.error(f"İndirme veya dönüştürme hatası: {e}")
+        raise HTTPException(status_code=500, detail=f"İndirme işlemi başarısız: {str(e)}")
 
-# --- Routes ---
+# --- YOL TANIMLARI (ROUTES) ---
 @app.get("/health")
 async def health():
+    """Uygulamanın çalışıp çalışmadığını kontrol eder."""
     return {"status": "ok"}
 
 @app.post("/get_video")
 async def get_video(link_request: LinkRequest):
+    """Verilen URL'deki videoyu indirir ve geri döndürür."""
     url = link_request.url.strip()
+    logger.info(f"Gelen istek: {url}")
 
-    # Yalnızca Twitter/X & TikTok kabul et
     if not is_supported(url):
-        raise HTTPException(status_code=400, detail="Sadece Twitter/X ve TikTok linkleri destekleniyor.")
+        raise HTTPException(
+            status_code=400,
+            detail="Sadece Twitter/X ve TikTok linkleri destekleniyor."
+        )
 
     try:
+        # 1. Aşama: Bilgileri çek
         probe_opts = _build_ytdlp_opts(skip_download=True, url=url)
         with yt_dlp.YoutubeDL(probe_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-    except yt_dlp.utils.DownloadError as e:
-        raise HTTPException(status_code=400, detail=f"Çözümleme hatası: {str(e)}")
+            if not info:
+                raise ValueError("Video bilgileri çekilemedi.")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Video bilgileri çekilirken hata: {e}")
+        raise HTTPException(status_code=400, detail=f"Video çözümlenemedi: {str(e)}")
 
     title = info.get("title") or info.get("id") or "video"
     fmt = pick_best_mp4_format(info)
 
-    # 1) Sadece GERÇEK progressive MP4'ü header'larıyla proxy et
+    # 2. Aşama: Eğer progressive MP4 varsa, doğrudan proxy et
     if fmt and fmt.get("url"):
+        logger.info("Progressive MP4 formatı bulundu, doğrudan akış başlatılıyor.")
         filename = sanitize_filename(title, ext=fmt.get("ext", "mp4"))
-        ct = (fmt.get("http_headers") or {}).get("Content-Type") or None
-        return await stream_from_url(
-            fmt["url"],
-            filename,
-            content_type=ct,
-            extra_headers=fmt.get("http_headers"),
-        )
+        try:
+            async with httpx.AsyncClient(headers={"User-Agent": USER_AGENT}, timeout=None) as client:
+                async with client.stream("GET", fmt["url"], follow_redirects=True) as r:
+                    r.raise_for_status()
+                    ct = r.headers.get("Content-Type", "video/mp4")
+                    disp = f'attachment; filename="{filename}"'
+                    return StreamingResponse(
+                        r.aiter_bytes(),
+                        media_type=ct,
+                        headers={"Content-Disposition": disp}
+                    )
+        except httpx.HTTPError as e:
+            logger.error(f"Doğrudan akış hatası: {e}")
+            pass # Proxy başarısız olursa ikinci aşamaya geç
 
-    # 2) Progressive MP4 yoksa indir + dönüştür + gönder
-    final_path, final_name, tmpdir = await download_to_mp4_with_ytdlp(url)
+    # 3. Aşama: Progressive MP4 yoksa, indir, dönüştür ve dosyayı gönder
+    logger.info("Doğrudan akış mümkün değil, video indirilecek ve dönüştürülecek.")
+    final_path, final_name, tmpdir = await download_and_convert_with_ytdlp(url)
+    
+    # Dosya indikten sonra geçici dizini silmek için arka plan görevi
     task = BackgroundTask(_cleanup_dir, tmpdir)
-    return FileResponse(path=final_path, media_type="video/mp4", filename=final_name, background=task)
+    return FileResponse(
+        path=final_path,
+        media_type="video/mp4",
+        filename=final_name,
+        background=task
+    )
 
-# --- Entrypoint ---
+# --- UYGULAMA BAŞLANGICI ---
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    # Uygulama başlamadan önce FFmpeg kontrolü
+    if not ffmpeg_available():
+        logger.error(
+            "HATA: FFmpeg sistemi üzerinde bulunamadı. "
+            "Lütfen FFmpeg'i kurun ve PATH değişkeninize ekleyin."
+        )
+        exit(1)
+        
+    logger.info("MRB Video Downloader API başlatılıyor.")
+    port = int(os.getenv("PORT", 8000))
+    # --reload parametresi geliştirme aşamasında önemlidir
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
