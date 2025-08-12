@@ -12,7 +12,7 @@ import os
 import tempfile
 import shutil
 
-app = FastAPI(title="MRB Video Downloader API", version="1.1.1")
+app = FastAPI(title="MRB Video Downloader API", version="1.3.0")
 
 # --- CORS ---
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")
@@ -24,7 +24,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Config / Env ---
+# --- Config ---
 USE_COOKIES = os.getenv("USE_COOKIES", "0") == "1"
 COOKIES_FILE = os.getenv("COOKIES_FILE")
 
@@ -84,7 +84,7 @@ async def stream_from_url(url: str, filename: str, content_type: str | None = No
 def _cleanup_dir(path: str):
     shutil.rmtree(path, ignore_errors=True)
 
-def _build_ytdlp_opts(skip_download: bool, outtmpl: str | None = None) -> dict:
+def _build_ytdlp_opts(skip_download: bool, outtmpl: str | None = None, url: str | None = None) -> dict:
     opts = {
         "quiet": True,
         "noplaylist": True,
@@ -95,6 +95,11 @@ def _build_ytdlp_opts(skip_download: bool, outtmpl: str | None = None) -> dict:
         opts["cookies"] = COOKIES_FILE
     if outtmpl:
         opts["outtmpl"] = outtmpl
+
+    # Twitter (X) için format ayarı
+    if url and "twitter.com" in url or "x.com" in url:
+        opts["format"] = "bestvideo+bestaudio/best"
+
     return opts
 
 async def download_to_mp4_with_ytdlp(url: str) -> tuple[str, str, str]:
@@ -102,7 +107,7 @@ async def download_to_mp4_with_ytdlp(url: str) -> tuple[str, str, str]:
         raise HTTPException(status_code=500, detail="FFmpeg bulunamadı.")
     tmpdir = tempfile.mkdtemp(prefix="mrb_")
     outtmpl = os.path.join(tmpdir, "%(title).200B.%(ext)s")
-    ydl_opts = _build_ytdlp_opts(skip_download=False, outtmpl=outtmpl)
+    ydl_opts = _build_ytdlp_opts(skip_download=False, outtmpl=outtmpl, url=url)
     ydl_opts["merge_output_format"] = "mp4"
     ydl_opts["postprocessors"] = [{"key": "FFmpegVideoRemuxer", "preferredformat": "mp4"}]
 
@@ -125,7 +130,7 @@ async def health():
 async def get_video(link_request: LinkRequest):
     url = link_request.url.strip()
     try:
-        probe_opts = _build_ytdlp_opts(skip_download=True)
+        probe_opts = _build_ytdlp_opts(skip_download=True, url=url)
         with yt_dlp.YoutubeDL(probe_opts) as ydl:
             info = ydl.extract_info(url, download=False)
     except yt_dlp.utils.DownloadError as e:
