@@ -13,7 +13,7 @@ import tempfile
 import shutil
 import unicodedata
 
-app = FastAPI(title="MRB Video Downloader API", version="1.3.1")
+app = FastAPI(title="MRB Video Downloader API", version="1.4.0")
 
 # --- CORS ---
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")
@@ -41,7 +41,7 @@ class LinkRequest(BaseModel):
 
 # --- Utils ---
 def sanitize_filename(name: str, ext: str = "mp4") -> str:
-    # Türkçe/özel karakterleri ASCII'ye indir
+    # Türkçe/özel karakterleri ASCII'ye indir ve temizle
     name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
     name = re.sub(r"[\\/:*?\"<>|]+", " ", name).strip()
     name = re.sub(r"\s+", " ", name)
@@ -52,16 +52,18 @@ def sanitize_filename(name: str, ext: str = "mp4") -> str:
     return name
 
 def pick_best_mp4_format(info: dict) -> dict | None:
+    """Sadece GERÇEK progressive MP4 (HLS/DASH değil) döndürür; yoksa None."""
+    bad_protocols = {"m3u8", "m3u8_native", "http_dash_segments", "dash"}
     formats = info.get("formats") or []
     mp4s = [
         f for f in formats
-        if f.get("ext") == "mp4" and f.get("vcodec") != "none" and f.get("acodec") != "none"
+        if f.get("ext") == "mp4"
+        and f.get("vcodec") not in (None, "none")
+        and f.get("acodec") not in (None, "none")
+        and (f.get("protocol") or "").lower() not in bad_protocols
     ]
     if mp4s:
         return sorted(mp4s, key=lambda f: (f.get("tbr") or 0), reverse=True)[0]
-    mp4_any = [f for f in formats if f.get("ext") == "mp4"]
-    if mp4_any:
-        return sorted(mp4_any, key=lambda f: (f.get("tbr") or 0), reverse=True)[0]
     return None
 
 def ffmpeg_available() -> bool:
@@ -77,7 +79,7 @@ async def stream_from_url(url: str, filename: str, content_type: str | None = No
             if r.status_code >= 400:
                 raise HTTPException(status_code=400, detail=f"Kaynak indirilemedi: {r.status_code}")
             ct = content_type or r.headers.get("Content-Type", "video/mp4")
-            disp = f'attachment; filename="{filename}"'  # ASCII, latin-1 güvenli
+            disp = f'attachment; filename="{filename}"'  # ASCII güvenli
             return StreamingResponse(
                 r.aiter_bytes(),
                 media_type=ct,
@@ -99,28 +101,47 @@ def _build_ytdlp_opts(skip_download: bool, outtmpl: str | None = None, url: str 
     if outtmpl:
         opts["outtmpl"] = outtmpl
 
-    # Twitter/X için doğru format seçimi (parantez önemli)
+    # X/Twitter için en iyi video+ses (HLS/DASH indirip birleştirme)
     if url and (("twitter.com" in url) or ("x.com" in url)):
         opts["format"] = "bestvideo+bestaudio/best"
 
     return opts
 
 async def download_to_mp4_with_ytdlp(url: str) -> tuple[str, str, str]:
+    """Gerçek MP4 yoksa: indir + H.264/AAC MP4'e dönüştür + dosya yolunu döndür."""
     if not ffmpeg_available():
         raise HTTPException(status_code=500, detail="FFmpeg bulunamadı.")
     tmpdir = tempfile.mkdtemp(prefix="mrb_")
     outtmpl = os.path.join(tmpdir, "%(title).200B.%(ext)s")
     ydl_opts = _build_ytdlp_opts(skip_download=False, outtmpl=outtmpl, url=url)
-    ydl_opts["merge_output_format"] = "mp4"
-    ydl_opts["postprocessors"] = [{"key": "FFmpegVideoRemuxer", "preferredformat": "mp4"}]
+
+    # Varsayılan en iyi kalite
+    ydl_opts.setdefault("format", "bestvideo+bestaudio/best")
+
+    # QuickTime/çoğu oynatıcıyla uyumlu H.264 + AAC dönüştürme (+faststart)
+    ydl_opts["postprocessors"] = [
+        {"key": "FFmpegVideoConvertor", "preferedformat": "mp4"},
+        {"key": "FFmpegMetadata"},
+    ]
+    ydl_opts["postprocessor_args"] = [
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart"
+    ]
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         downloaded = ydl.prepare_filename(info)
 
+    # Nihai MP4 yolunu bul
     base = os.path.splitext(os.path.basename(downloaded))[0]
-    candidate = os.path.join(tmpdir, f"{base}.mp4")
-    final_path = candidate if os.path.exists(candidate) else downloaded
+    final_path = os.path.join(tmpdir, f"{base}.mp4")
+    if not os.path.exists(final_path):
+        mp4s = [os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.lower().endswith(".mp4")]
+        if not mp4s:
+            raise HTTPException(status_code=400, detail="MP4 oluşturulamadı.")
+        final_path = max(mp4s, key=os.path.getmtime)
+
     final_name = sanitize_filename(info.get("title") or info.get("id") or "video", ext="mp4")
     return final_path, final_name, tmpdir
 
@@ -144,15 +165,23 @@ async def get_video(link_request: LinkRequest):
     title = info.get("title") or info.get("id") or "video"
     fmt = pick_best_mp4_format(info)
 
+    # 1) Sadece GERÇEK progressive MP4'ü header'larıyla proxy et
     if fmt and fmt.get("url"):
         filename = sanitize_filename(title, ext=fmt.get("ext", "mp4"))
         ct = (fmt.get("http_headers") or {}).get("Content-Type") or None
-        return await stream_from_url(fmt["url"], filename, content_type=ct, extra_headers=fmt.get("http_headers"))
+        return await stream_from_url(
+            fmt["url"],
+            filename,
+            content_type=ct,
+            extra_headers=fmt.get("http_headers"),
+        )
 
+    # 2) Aksi halde indir + H.264/AAC MP4'e çevir + dosya gönder
     final_path, final_name, tmpdir = await download_to_mp4_with_ytdlp(url)
     task = BackgroundTask(_cleanup_dir, tmpdir)
     return FileResponse(path=final_path, media_type="video/mp4", filename=final_name, background=task)
 
+# --- Entrypoint ---
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
