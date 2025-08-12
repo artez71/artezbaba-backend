@@ -17,5 +17,5 @@ COPY . .
 # Uygulamanın çalışacağı portu belirtiriz
 EXPOSE 8000
 
-# Uygulamayı başlatırız (Shell formu, değişkeni kesinlikle okur)
-CMD uvicorn main:app --host 0.0.0.0 --port $PORT
+# Uygulamayı başlatırız (Shell form, ortam değişkenleri genişler)
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port $PORT"]
