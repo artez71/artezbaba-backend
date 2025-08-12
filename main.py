@@ -11,8 +11,9 @@ import re
 import os
 import tempfile
 import shutil
+import unicodedata
 
-app = FastAPI(title="MRB Video Downloader API", version="1.3.0")
+app = FastAPI(title="MRB Video Downloader API", version="1.3.1")
 
 # --- CORS ---
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")
@@ -28,7 +29,7 @@ app.add_middleware(
 USE_COOKIES = os.getenv("USE_COOKIES", "0") == "1"
 COOKIES_FILE = os.getenv("COOKIES_FILE")
 
-# 📌 Mobil User-Agent (Android Chrome)
+# Mobil User-Agent (Android Chrome)
 UA = (
     "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
@@ -40,6 +41,8 @@ class LinkRequest(BaseModel):
 
 # --- Utils ---
 def sanitize_filename(name: str, ext: str = "mp4") -> str:
+    # Türkçe/özel karakterleri ASCII'ye indir
+    name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
     name = re.sub(r"[\\/:*?\"<>|]+", " ", name).strip()
     name = re.sub(r"\s+", " ", name)
     if not name:
@@ -74,7 +77,7 @@ async def stream_from_url(url: str, filename: str, content_type: str | None = No
             if r.status_code >= 400:
                 raise HTTPException(status_code=400, detail=f"Kaynak indirilemedi: {r.status_code}")
             ct = content_type or r.headers.get("Content-Type", "video/mp4")
-            disp = f'attachment; filename="{filename}"'
+            disp = f'attachment; filename="{filename}"'  # ASCII, latin-1 güvenli
             return StreamingResponse(
                 r.aiter_bytes(),
                 media_type=ct,
@@ -96,8 +99,8 @@ def _build_ytdlp_opts(skip_download: bool, outtmpl: str | None = None, url: str 
     if outtmpl:
         opts["outtmpl"] = outtmpl
 
-    # Twitter (X) için format ayarı
-    if url and "twitter.com" in url or "x.com" in url:
+    # Twitter/X için doğru format seçimi (parantez önemli)
+    if url and (("twitter.com" in url) or ("x.com" in url)):
         opts["format"] = "bestvideo+bestaudio/best"
 
     return opts
