@@ -1,21 +1,15 @@
-# Python'ın hafif sürümünü kullan
-FROM python:3.10-slim
+FROM python:3.11-slim
 
-# ffmpeg kur
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Çalışma dizini
 WORKDIR /app
 
-# Gereksinimleri yükle
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Proje dosyalarını kopyala
-COPY . .
+COPY main.py .
 
-# Portu aç
-EXPOSE 8000
-
-# Uygulamayı başlat
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
