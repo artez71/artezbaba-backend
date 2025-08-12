@@ -1,4 +1,3 @@
-# main.py
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
@@ -112,7 +111,8 @@ def _build_ytdlp_opts(skip_download: bool, outtmpl: str | None = None, url: str 
 
     # X/Twitter için en iyi video+ses (HLS/DASH indirip birleştirme)
     if url and (("twitter.com" in url) or ("x.com" in url)):
-        opts["format"] = "bestvideo+bestaudio/best"
+        # bestvideo* = video codec uyumsuzluğunu esnetir, +bestaudio da ekler
+        opts["format"] = "bestvideo*+bestaudio/best"
 
     return opts
 
@@ -124,8 +124,8 @@ async def download_to_mp4_with_ytdlp(url: str) -> tuple[str, str, str]:
     outtmpl = os.path.join(tmpdir, "%(title).200B.%(ext)s")
     ydl_opts = _build_ytdlp_opts(skip_download=False, outtmpl=outtmpl, url=url)
 
-    # Varsayılan en iyi kalite
-    ydl_opts.setdefault("format", "bestvideo+bestaudio/best")
+    # Zorunlu en iyi kalite (video+audio)
+    ydl_opts.setdefault("format", "bestvideo*+bestaudio/best")
 
     # QuickTime/çoğu oynatıcıyla uyumlu H.264 + AAC dönüştürme (+faststart)
     ydl_opts["postprocessors"] = [
@@ -190,7 +190,7 @@ async def get_video(link_request: LinkRequest):
             extra_headers=fmt.get("http_headers"),
         )
 
-    # 2) Aksi halde indir + H.264/AAC MP4'e çevir + dosya gönder
+    # 2) Progressive MP4 yoksa indir + dönüştür + gönder
     final_path, final_name, tmpdir = await download_to_mp4_with_ytdlp(url)
     task = BackgroundTask(_cleanup_dir, tmpdir)
     return FileResponse(path=final_path, media_type="video/mp4", filename=final_name, background=task)
