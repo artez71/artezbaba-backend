@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger("mrb-downloader")
 
 # --- APP ---
-app = FastAPI(title="MRB Video Downloader API", version="1.6.2")
+app = FastAPI(title="MRB Video Downloader API", version="1.6.3")
 
 # --- CORS ---
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "*")
@@ -30,8 +30,9 @@ app.add_middleware(
 
 # --- CONFIG ---
 USER_AGENT = (
-    "Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36"
 )
 HTTP_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "30"))
 MAX_CONNS = int(os.getenv("HTTP_MAX_CONNS", "10"))
@@ -88,7 +89,7 @@ def _build_ytdlp_opts() -> dict:
     use_cookies = os.getenv("USE_COOKIES", "0") == "1"
     cookies_file = os.getenv("COOKIES_FILE") or None
     if use_cookies and cookies_file:
-        opts["cookies"] = cookies_file
+        opts["cookiefile"] = cookies_file
 
     return opts
 
@@ -126,7 +127,10 @@ async def get_video(link_request: LinkRequest):
     
     try:
         async with httpx.AsyncClient(
-            headers={"User-Agent": USER_AGENT},
+            headers={
+                "User-Agent": USER_AGENT,
+                "Referer": url
+            },
             timeout=httpx.Timeout(HTTP_TIMEOUT),
             limits=httpx.Limits(max_connections=MAX_CONNS, max_keepalive_connections=KEEPALIVE_CONNS),
         ) as client:
