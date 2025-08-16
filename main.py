@@ -3,7 +3,7 @@ import tempfile
 import shutil
 from pathlib import Path
 
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from starlette.background import BackgroundTask
@@ -12,7 +12,7 @@ from yt_dlp import YoutubeDL
 
 app = FastAPI(title="DL Site", version="1.0")
 
-# (İstersen tek domain açmak istersen CORS'u daraltabilirsin)
+# CORS middleware (isteğe bağlı domain kısıtlayabilirsin)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -94,15 +94,16 @@ INDEX_HTML = """
 def home():
     return HTMLResponse(INDEX_HTML)
 
+
 def _cleanup_dir(path: str):
     shutil.rmtree(path, ignore_errors=True)
+
 
 @app.get("/download")
 def download(url: str = Query(..., description="Twitter/X veya TikTok video URL")):
     tmpdir = tempfile.mkdtemp(prefix="dl-")
     cookiefile_path = None
 
-    # Opsiyonel: Railway'de COOKIES_TXT env değişkenine Netscape formatında cookie yapıştırırsan
     cookies_txt = os.getenv("COOKIES_TXT", "").strip()
     if cookies_txt:
         cookiefile_path = str(Path(tmpdir) / "cookies.txt")
@@ -111,23 +112,20 @@ def download(url: str = Query(..., description="Twitter/X veya TikTok video URL"
 
     ydl_opts = {
         "outtmpl": str(Path(tmpdir) / "%(title).200B.%(ext)s"),
-        "merge_output_format": "mp4",          # video+audio -> mp4
-        "format": "bv*+ba/best",               # en iyi görüntü+ses
+        "merge_output_format": "mp4",
+        "format": "bv*+ba/best",
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
-        # Twitter/TikTok sık 403 verirse bunu açabilirsin:
-        # "http_headers": {"User-Agent": "Mozilla/5.0"},
     }
     if cookiefile_path:
         ydl_opts["cookiefile"] = cookiefile_path
 
     try:
         with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)  # indir
-            out_path = ydl.prepare_filename(info)        # gerçek çıktı adı (ext .mp4 olabilir)
+            info = ydl.extract_info(url, download=True)
+            out_path = ydl.prepare_filename(info)
             base = os.path.splitext(out_path)[0]
-            # merger mp4 üretmiş olabilir
             if not os.path.exists(out_path) and os.path.exists(base + ".mp4"):
                 out_path = base + ".mp4"
 
@@ -136,7 +134,6 @@ def download(url: str = Query(..., description="Twitter/X veya TikTok video URL"
 
         filename = os.path.basename(out_path)
         task = BackgroundTask(lambda: _cleanup_dir(tmpdir))
-        # İçerik türünü mp4 varsayıyoruz; dl formatı farklıysa tarayıcı yine indirir.
         return FileResponse(
             out_path,
             media_type="video/mp4",
@@ -146,3 +143,9 @@ def download(url: str = Query(..., description="Twitter/X veya TikTok video URL"
     except Exception as e:
         _cleanup_dir(tmpdir)
         raise HTTPException(status_code=400, detail=f"İndirme hatası: {str(e)}")
+
+
+# POST ile formdan gelen URL'i download fonksiyonuna yönlendiriyoruz
+@app.post("/get_video")
+def get_video(url: str = Form(...)):
+    return download(url)
