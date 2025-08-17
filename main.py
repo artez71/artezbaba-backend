@@ -1,8 +1,10 @@
 import os
+import re
 import tempfile
 import shutil
+import unicodedata
 from typing import Optional, Dict
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 
 import requests
 from fastapi import FastAPI, Form, Body, HTTPException
@@ -41,9 +43,18 @@ def normalize_tiktok_url(url: str) -> str:
         url = expand_short_url(url)
     return url
 
+def ascii_fallback(name: str) -> str:
+    """
+    HTTP header için ASCII fallback dosya adı üretir.
+    Türkçe/özel harfleri temizler.
+    """
+    normalized = unicodedata.normalize("NFKD", name)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    safe = re.sub(r'[^A-Za-z0-9._-]+', '_', ascii_only).strip("._")
+    return safe or "file"
+
 @app.post("/get_video")
 def get_video(
-    # Hem FormData hem JSON destekleniyor; anahtar adı **url**
     url: Optional[str] = Form(None),
     payload: Optional[Dict] = Body(None)
 ):
@@ -77,7 +88,6 @@ def get_video(
             if not path.endswith(".mp4"):
                 path = path.rsplit(".", 1)[0] + ".mp4"
 
-        # Dosyayı stream ederek gönder; tamamlanınca temizle
         def file_iter(p: str, chunk_size: int = 1024 * 1024):
             try:
                 with open(p, "rb") as f:
@@ -89,8 +99,13 @@ def get_video(
             finally:
                 shutil.rmtree(tmpdir, ignore_errors=True)
 
+        basename = os.path.basename(path)
+        fallback_name = ascii_fallback(basename)
+        filename_star = quote(basename)
+
         headers = {
-            "Content-Disposition": f'attachment; filename="{os.path.basename(path)}"',
+            # fallback + UTF-8 gerçek ad
+            "Content-Disposition": f"attachment; filename=\"{fallback_name}\"; filename*=UTF-8''{filename_star}",
             "Cache-Control": "no-store",
         }
         try:
