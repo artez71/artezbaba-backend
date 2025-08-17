@@ -3,7 +3,7 @@ import tempfile
 import shutil
 from pathlib import Path
 
-from fastapi import FastAPI, Query, Form, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from starlette.background import BackgroundTask
@@ -12,7 +12,7 @@ from yt_dlp import YoutubeDL
 
 app = FastAPI(title="DL Site", version="1.0")
 
-# CORS middleware (isteğe bağlı domain kısıtlayabilirsin)
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,64 +28,13 @@ INDEX_HTML = """
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Twitter/TikTok Video İndir</title>
-  <style>
-    :root { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; }
-    body { display:flex; min-height:100dvh; align-items:center; justify-content:center; background:#0b1220; color:#f3f4f6; margin:0; }
-    .card { width:min(680px, 92vw); background:#111827; padding:24px; border-radius:18px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
-    h1 { margin:0 0 16px; font-weight:700; letter-spacing:.2px; }
-    p { opacity:.9; margin:0 0 16px; font-size:14px; line-height:1.5; }
-    .row { display:flex; gap:10px; margin-top:12px; }
-    input[type="url"]{ flex:1; padding:14px 16px; border-radius:12px; border:1px solid #374151; background:#0f172a; color:#e5e7eb; outline:none; }
-    button { padding:14px 18px; border-radius:12px; border:0; background:#3b82f6; color:white; font-weight:700; cursor:pointer; }
-    button:disabled{opacity:.6; cursor:not-allowed}
-    .hint{font-size:12px; opacity:.7}
-    .ok{color:#34d399}
-    .err{color:#f87171}
-    .footer{margin-top:14px; font-size:12px; opacity:.6}
-    .badge{display:inline-block; background:#1f2937; padding:4px 8px; border-radius:999px; font-size:11px; margin-right:6px;}
-  </style>
 </head>
 <body>
-  <div class="card">
-    <h1>Twitter/X & TikTok Video İndir</h1>
-    <p>Linki yapıştır → <span class="badge">twitter.com | x.com</span><span class="badge">tiktok.com</span> → <strong>İndir</strong></p>
-    <div class="row">
-      <input id="url" type="url" placeholder="https://x.com/... veya https://www.tiktok.com/..." />
-      <button id="go">İndir</button>
-    </div>
-    <p class="hint">Twitter için bazen çerez (cookie) gerekir. Gerekirse sunucuya <code>COOKIES_TXT</code> olarak eklemen yeterli.</p>
-    <p id="msg" class="hint"></p>
-    <div class="footer">© mini dl • yalnızca izinli içerikler için</div>
-  </div>
-  <script>
-    const urlEl = document.getElementById('url');
-    const btn = document.getElementById('go');
-    const msg = document.getElementById('msg');
-
-    function setMsg(text, ok=false){
-      msg.textContent = text || '';
-      msg.className = ok ? 'hint ok' : (text ? 'hint err' : 'hint');
-    }
-
-    btn.addEventListener('click', () => {
-      const u = urlEl.value.trim();
-      if(!u){ setMsg('Lütfen bir URL gir.', false); return; }
-      setMsg('');
-      btn.disabled = true;
-      // İndirmeyi direkt GET ile tetikliyoruz ki tarayıcı dosyayı indirsin
-      const downloadUrl = '/download?url=' + encodeURIComponent(u);
-      // Yeni bir gizli iframe ile indirme (sayfa değişmesin)
-      const iframe = document.createElement('iframe');
-      iframe.style.display = 'none';
-      iframe.src = downloadUrl;
-      document.body.appendChild(iframe);
-      setTimeout(() => {
-        btn.disabled = false;
-        setMsg('İndirme başlatıldı. Eğer inmedi ise linkin erişimi engelli olabilir.', true);
-        setTimeout(()=>setMsg(''), 6000);
-      }, 800);
-    });
-  </script>
+  <h1>Twitter & TikTok Video İndirici</h1>
+  <form action="/get_video" method="post">
+    <input type="url" name="url" placeholder="https://x.com/... veya https://www.tiktok.com/..." required />
+    <button type="submit">İndir</button>
+  </form>
 </body>
 </html>
 """
@@ -94,10 +43,8 @@ INDEX_HTML = """
 def home():
     return HTMLResponse(INDEX_HTML)
 
-
 def _cleanup_dir(path: str):
     shutil.rmtree(path, ignore_errors=True)
-
 
 @app.get("/download")
 def download(url: str = Query(..., description="Twitter/X veya TikTok video URL")):
@@ -144,8 +91,7 @@ def download(url: str = Query(..., description="Twitter/X veya TikTok video URL"
         _cleanup_dir(tmpdir)
         raise HTTPException(status_code=400, detail=f"İndirme hatası: {str(e)}")
 
-
-# POST ile formdan gelen URL'i download fonksiyonuna yönlendiriyoruz
+# --- Yeni eklenen endpoint ---
 @app.post("/get_video")
 def get_video(url: str = Form(...)):
     return download(url)
