@@ -1,12 +1,9 @@
-import os
-import tempfile
-import shutil
-from pathlib import Path
+import os, tempfile, shutil
 from typing import Optional
 from urllib.parse import urlparse
 
-import requests  # <-- EKLENDİ
-from fastapi import FastAPI, Form, HTTPException, Body
+import requests
+from fastapi import FastAPI, Form, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
@@ -14,7 +11,7 @@ from starlette.background import BackgroundTask
 from yt_dlp import YoutubeDL
 import imageio_ffmpeg as ffmpeg
 
-# ffmpeg yolunu ayarla
+# ffmpeg yolunu PATH'e ekle
 os.environ["PATH"] += os.pathsep + os.path.dirname(ffmpeg.get_ffmpeg_exe())
 
 app = FastAPI()
@@ -29,20 +26,15 @@ app.add_middleware(
 )
 
 def expand_short_url(url: str, timeout: float = 6.0) -> str:
-    """
-    vt.tiktok.com gibi kısaltılmış linkleri gerçek TikTok URL'sine çevirir.
-    """
+    """vt.tiktok.com gibi kısaltılmış linkleri gerçek TikTok URL’sine çevirir."""
     try:
-        # HEAD bazı durumlarda engellenebiliyor; bu yüzden GET + stream=False
         r = requests.get(url, allow_redirects=True, timeout=timeout)
         return r.url or url
     except Exception:
-        return url  # başarısızsa orijinali kullan
+        return url
 
 def normalize_tiktok_url(url: str) -> str:
-    """
-    TikTok için yönlendirme ve başlık gereksinimlerine yardımcı normalizasyon.
-    """
+    """TikTok kısa linklerini genişletir."""
     host = urlparse(url).netloc.lower()
     if host.startswith("vt.tiktok.com"):
         url = expand_short_url(url)
@@ -50,15 +42,14 @@ def normalize_tiktok_url(url: str) -> str:
 
 @app.post("/get_video")
 def get_video(
-    url_form: Optional[str] = Form(None),
+    # Hem FormData hem JSON destekleniyor; anahtar adı **url**
+    url: Optional[str] = Form(None),
     payload: Optional[dict] = Body(None)
 ):
-    # Hem FormData hem JSON kabul et
-    url = url_form or (payload or {}).get("url")
+    url = url or (payload or {}).get("url")
     if not url:
         raise HTTPException(status_code=422, detail="url zorunludur.")
 
-    # vt.* kısaltmaları genişlet
     url = normalize_tiktok_url(url)
 
     try:
@@ -68,7 +59,6 @@ def get_video(
         ydl_opts = {
             "outtmpl": outtmpl,
             "merge_output_format": "mp4",
-            # TikTok için güvenilir başlıklar
             "http_headers": {
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -77,10 +67,6 @@ def get_video(
                 ),
                 "Referer": "https://www.tiktok.com/",
             },
-            # Bağlantı/SSL sorunlarında yardımcı olabiliyor:
-            # "nocheckcertificate": True,
-            # Bazı coğrafi engellerde daha çok format denemesi:
-            # "geo_bypass": True,
         }
 
         with YoutubeDL(ydl_opts) as ydl:
@@ -100,10 +86,9 @@ def get_video(
         )
 
     except Exception as e:
-        # TikTok özel mesajları kullanıcı dostu hale getir
         msg = str(e)
         if "HTTP Error 403" in msg or "Unsupported URL" in msg:
-            msg = "TikTok bağlantısına erişilemedi. Linki uygulama yerine tarayıcıdan kopyalamayı deneyin."
+            msg = "TikTok bağlantısına erişilemedi. Linki uygulama yerine tarayıcıdan kopyalayın."
         raise HTTPException(status_code=400, detail=f"İndirme hatası: {msg}")
 
 @app.get("/")
