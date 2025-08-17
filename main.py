@@ -1,7 +1,7 @@
 import os
 import tempfile
 import shutil
-from typing import Optional
+from typing import Optional, Dict
 from urllib.parse import urlparse
 
 import requests
@@ -45,7 +45,7 @@ def normalize_tiktok_url(url: str) -> str:
 def get_video(
     # Hem FormData hem JSON destekleniyor; anahtar adı **url**
     url: Optional[str] = Form(None),
-    payload: Optional[dict] = Body(None)
+    payload: Optional[Dict] = Body(None)
 ):
     url = url or (payload or {}).get("url")
     if not url:
@@ -60,6 +60,7 @@ def get_video(
         ydl_opts = {
             "outtmpl": outtmpl,
             "merge_output_format": "mp4",
+            "noplaylist": True,
             "http_headers": {
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -88,14 +89,17 @@ def get_video(
             finally:
                 shutil.rmtree(tmpdir, ignore_errors=True)
 
-        return StreamingResponse(
-            file_iter(path),
-            media_type="video/mp4",
-            headers={
-                "Content-Disposition": f'attachment; filename="{os.path.basename(path)}"',
-                "Cache-Control": "no-store",
-            },
-        )
+        headers = {
+            "Content-Disposition": f'attachment; filename="{os.path.basename(path)}"',
+            "Cache-Control": "no-store",
+        }
+        try:
+            size = os.path.getsize(path)
+            headers["Content-Length"] = str(size)
+        except Exception:
+            pass
+
+        return StreamingResponse(file_iter(path), media_type="video/mp4", headers=headers)
 
     except Exception as e:
         msg = str(e)
