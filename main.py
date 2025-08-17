@@ -46,8 +46,8 @@ def home():
 def _cleanup_dir(path: str):
     shutil.rmtree(path, ignore_errors=True)
 
-@app.get("/download")
-def download(url: str = Query(..., description="Twitter/X veya TikTok video URL")):
+def download_file(url: str):
+    """Asıl indirme işini yapan fonksiyon"""
     tmpdir = tempfile.mkdtemp(prefix="dl-")
     cookiefile_path = None
 
@@ -91,7 +91,10 @@ def download(url: str = Query(..., description="Twitter/X veya TikTok video URL"
         _cleanup_dir(tmpdir)
         raise HTTPException(status_code=400, detail=f"İndirme hatası: {str(e)}")
 
-# --- Yeni eklenen endpoint ---
+@app.get("/download")
+def download(url: str = Query(..., description="Twitter/X veya TikTok video URL")):
+    return download_file(url)
+
 @app.post("/get_video")
 def get_video(url: str = Form(...)):
-    return download(url)
+    return download_file(url)
