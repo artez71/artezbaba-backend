@@ -1,12 +1,13 @@
-import os, tempfile, shutil
+import os
+import tempfile
+import shutil
 from typing import Optional
 from urllib.parse import urlparse
 
 import requests
 from fastapi import FastAPI, Form, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from starlette.background import BackgroundTask
+from starlette.responses import StreamingResponse
 
 from yt_dlp import YoutubeDL
 import imageio_ffmpeg as ffmpeg
@@ -71,18 +72,29 @@ def get_video(
 
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            if not filename.endswith(".mp4"):
-                filename = filename.rsplit(".", 1)[0] + ".mp4"
+            path = ydl.prepare_filename(info)
+            if not path.endswith(".mp4"):
+                path = path.rsplit(".", 1)[0] + ".mp4"
 
-        def cleanup():
-            shutil.rmtree(tmpdir, ignore_errors=True)
+        # Dosyayı stream ederek gönder; tamamlanınca temizle
+        def file_iter(p: str, chunk_size: int = 1024 * 1024):
+            try:
+                with open(p, "rb") as f:
+                    while True:
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        yield chunk
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
 
-        return FileResponse(
-            filename,
+        return StreamingResponse(
+            file_iter(path),
             media_type="video/mp4",
-            filename=os.path.basename(filename),
-            background=BackgroundTask(cleanup),
+            headers={
+                "Content-Disposition": f'attachment; filename="{os.path.basename(path)}"',
+                "Cache-Control": "no-store",
+            },
         )
 
     except Exception as e:
